@@ -5,14 +5,42 @@ A super simple FastAPI application that allows students to view and sign up
 for extracurricular activities at Mergington High School.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+import secrets
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
 
+
 app = FastAPI(title="Mergington High School API",
-              description="API for viewing and signing up for extracurricular activities")
+              description="API for viewing and signing up for extracurricular activities with authentication and roles.")
+
+# Simple in-memory user store
+users = {
+    "admin@mergington.edu": {"password": "adminpass", "role": "admin"},
+    "teacher@mergington.edu": {"password": "teachpass", "role": "admin"},
+    "student1@mergington.edu": {"password": "studpass1", "role": "student"},
+    "student2@mergington.edu": {"password": "studpass2", "role": "student"},
+}
+
+security = HTTPBasic()
+
+def get_current_user(credentials: HTTPBasicCredentials = Depends(security)):
+    user = users.get(credentials.username)
+    if not user or not secrets.compare_digest(user["password"], credentials.password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return {"username": credentials.username, "role": user["role"]}
+
+def require_admin(user=Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return user
 
 # Mount the static files directory
 current_dir = Path(__file__).parent
@@ -84,49 +112,33 @@ def root():
 
 
 @app.get("/activities")
-def get_activities():
+def get_activities(user=Depends(get_current_user)):
     return activities
 
 
 @app.post("/activities/{activity_name}/signup")
-def signup_for_activity(activity_name: str, email: str):
-    """Sign up a student for an activity"""
-    # Validate activity exists
+def signup_for_activity(activity_name: str, email: str, user=Depends(get_current_user)):
+    """Sign up a student for an activity (must be authenticated)"""
+    if user["role"] not in ("admin", "student"):
+        raise HTTPException(status_code=403, detail="Not allowed")
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
-
-    # Get the specific activity
     activity = activities[activity_name]
-
-    # Validate student is not already signed up
     if email in activity["participants"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Student is already signed up"
-        )
-
-    # Add student
+        raise HTTPException(status_code=400, detail="Student is already signed up")
     activity["participants"].append(email)
     return {"message": f"Signed up {email} for {activity_name}"}
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
-    # Validate activity exists
+def unregister_from_activity(activity_name: str, email: str, user=Depends(get_current_user)):
+    """Unregister a student from an activity (must be authenticated)"""
+    if user["role"] not in ("admin", "student"):
+        raise HTTPException(status_code=403, detail="Not allowed")
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
-
-    # Get the specific activity
     activity = activities[activity_name]
-
-    # Validate student is signed up
     if email not in activity["participants"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Student is not signed up for this activity"
-        )
-
-    # Remove student
+        raise HTTPException(status_code=400, detail="Student is not signed up for this activity")
     activity["participants"].remove(email)
     return {"message": f"Unregistered {email} from {activity_name}"}
